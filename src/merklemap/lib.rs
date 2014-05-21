@@ -16,7 +16,42 @@ static NODE_CHILDREN: uint = 1 << ELEMENT_BITS;
 static HEADER_SIZE: u64 = 1024;
 static NODE_SIZE: u64 = 1024;
 
-struct Node {
+#[deriving(Clone)]
+pub struct Element(u8);
+
+impl Element {
+    pub fn from_bytes(bytes: &[u8]) -> Vec<Element> {
+        let mut ret = Vec::with_capacity(bytes.len()*8/ELEMENT_BITS);
+        
+        assert_eq!(ELEMENT_BITS, 4);
+        
+        for b in bytes.iter() {
+            ret.push(Element(b >> 4));
+            ret.push(Element(b & 0x0F));
+        }
+        
+        return ret;
+    }
+
+    pub fn to_bytes(elements: &[Element]) -> Vec<u8> {
+        let mut ret = Vec::with_capacity((elements.len()*ELEMENT_BITS+7)/8);
+
+        assert_eq!(ELEMENT_BITS, 4);
+        for chunk in elements.chunks(2) {
+            ret.push((chunk.get(0).unwrap().to_byte() << 4) | chunk.get(1).map_or(0, |&e| e.to_byte()));
+        }
+
+        return ret;
+    }
+
+    pub fn to_byte(&self) -> u8 {
+        match self {
+            &Element(e) => e
+        }
+    }
+}
+
+struct DiskNode {
     // NodeData
     children: [u64, ..NODE_CHILDREN],
     child_hashes: [[u8, ..HASH_BYTES], ..NODE_CHILDREN],
@@ -29,9 +64,9 @@ struct Node {
 
 }
 
-impl Node {
-    pub fn from_reader<T: Reader>(file: &mut T) -> IoResult<Node> {
-        let mut node: Node = Default::default();
+impl DiskNode {
+    pub fn from_reader<T: Reader>(file: &mut T) -> IoResult<DiskNode> {
+        let mut node: DiskNode = Default::default();
         for j in range(0, NODE_CHILDREN) {
             node.children[j] = try!(file.read_le_u64());
         }
@@ -46,9 +81,9 @@ impl Node {
     }
 }
 
-impl Default for Node {
-    fn default() -> Node {
-        Node {
+impl Default for DiskNode {
+    fn default() -> DiskNode {
+        DiskNode {
             // NodeData
             children: [0, ..NODE_CHILDREN],
             child_hashes: [[0, ..HASH_BYTES], ..NODE_CHILDREN],
@@ -62,25 +97,49 @@ impl Default for Node {
     }
 }
 
+pub struct Node {
+    pub value: [u8, ..HASH_BYTES],
+    pub children: [Option<Box<Node>>, ..NODE_CHILDREN],
+    pub key: ~[Element],
+}
+
 pub struct MerkleMap {
-    nodes: Vec<Node>,
+    pub root: Node,
 }
 
 impl MerkleMap {
     pub fn open<T: Reader+Seek>(file: &mut T) -> IoResult<MerkleMap> {
-        let mut map = MerkleMap { nodes: Vec::new() };
+        let mut nodes = Vec::new();
         let items = try!(file.read_le_u64());
 
+        nodes.push(Default::default());
         for i in range(0, items) {
             try!(file.seek((HEADER_SIZE + i*NODE_SIZE) as i64, SeekSet));
-            map.nodes.push(try!(Node::from_reader(file)));
+            nodes.push(try!(DiskNode::from_reader(file)));
         }
 
-        return Ok(map);
+       return Ok(MerkleMap { root: MerkleMap::rebuild_node(nodes.len()-1, &nodes) });
     }
 
-    pub fn nodes<'a>(&'a self) -> &'a Vec<Node> {
-        &self.nodes
+    fn rebuild_node(idx: uint, nodes: &Vec<DiskNode>) -> Node {
+        let mut ret = Node {
+            value: nodes.get(idx).value,
+            // nullable pointer optimization
+            children: unsafe { std::mem::init() },
+            key: {
+                let mut key = Element::from_bytes(nodes.get(idx).key_substring);
+                key.truncate(nodes.get(idx).substring_length as uint);
+                key.as_slice().to_owned()
+            }
+        };
+
+        for (i, &child) in nodes.get(idx).children.iter().enumerate() {
+            if child != 0 {
+                ret.children[i] = Some(box MerkleMap::rebuild_node(child as uint, nodes));
+            }
+        }
+        
+        return ret;
     }
 }
 
