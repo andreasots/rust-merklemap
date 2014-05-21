@@ -108,7 +108,7 @@ pub struct MerkleMap {
 }
 
 impl MerkleMap {
-    pub fn open<T: Reader+Seek>(file: &mut T) -> IoResult<MerkleMap> {
+    pub fn open<T: Reader+Seek>(file: &mut T, root_idx: uint) -> IoResult<MerkleMap> {
         let mut nodes = Vec::new();
         let items = try!(file.read_le_u64());
 
@@ -118,7 +118,9 @@ impl MerkleMap {
             nodes.push(try!(DiskNode::from_reader(file)));
         }
 
-       return Ok(MerkleMap { root: MerkleMap::rebuild_node(nodes.len()-1, &nodes) });
+       return Ok(MerkleMap {
+           root: MerkleMap::rebuild_node(if root_idx > 0 { root_idx } else { nodes.len()-1 }, &nodes)
+       });
     }
 
     fn rebuild_node(idx: uint, nodes: &Vec<DiskNode>) -> Node {
