@@ -6,15 +6,15 @@ use std::default::Default;
 use std::slice::bytes::copy_memory;
 use std::vec::Vec;
 
-static KEY_BYTES: uint = 32;
-static HASH_BYTES: uint = 32;
-static DATA_BYTES: uint = 32;
-static ELEMENT_BITS: uint = 4;
-static KEY_ELEMENTS: uint = KEY_BYTES * 8 / ELEMENT_BITS;
-static NODE_CHILDREN: uint = 1 << ELEMENT_BITS;
+pub static KEY_BYTES: uint = 32;
+pub static HASH_BYTES: uint = 32;
+pub static DATA_BYTES: uint = 32;
+pub static ELEMENT_BITS: uint = 4;
+pub static KEY_ELEMENTS: uint = KEY_BYTES * 8 / ELEMENT_BITS;
+pub static NODE_CHILDREN: uint = 1 << ELEMENT_BITS;
 
-static HEADER_SIZE: u64 = 1024;
-static NODE_SIZE: u64 = 1024;
+pub static HEADER_SIZE: u64 = 1024;
+pub static NODE_SIZE: u64 = 1024;
 
 #[deriving(Clone)]
 pub struct Element(u8);

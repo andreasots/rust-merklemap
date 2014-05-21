@@ -14,7 +14,9 @@ fn print_values(tree: &merklemap::Node, prefix: &str) {
         new_prefix.push_char(std::char::from_digit(e.to_byte() as uint, 16).unwrap());
     }
 
-    println!("{} => {}", new_prefix, tree.value.to_hex());
+    if new_prefix.len() == merklemap::KEY_ELEMENTS {
+        println!("{} => {}", new_prefix, tree.value.to_hex());
+    }
     
     for (i, child) in tree.children.iter().enumerate() {
         match child {
