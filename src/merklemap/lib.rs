@@ -114,18 +114,11 @@ pub enum TreePath {
 }
 
 impl Node {
-    fn find(&self, key: &[Element]) -> (Option<[u8, ..HASH_BYTES]>, TreePath) {
-        {
-            let mut key_as_str = StrBuf::with_capacity(key.len());
-            for e in key.iter() {
-                key_as_str.push_char(std::char::from_digit(e.to_byte() as uint, 16).unwrap());
-            }
-            println!("find {}", key_as_str);
-        }
+    fn find<'a>(&'a self, key: &[Element]) -> (Option<&'a [u8, ..HASH_BYTES]>, TreePath) {
         if key == self.key.as_slice() {
-            (Some(self.value), Onode(self.hash, key.to_owned()))
+            (Some(&self.value), Onode(self.hash, key.to_owned()))
         } else {
-            let mut value: Option<[u8, ..HASH_BYTES]> = None;
+            let mut value: Option<&'a [u8, ..HASH_BYTES]> = None;
             let mut children: [Option<Box<TreePath>>, ..NODE_CHILDREN] = unsafe { std::mem::init() };
             for (node, child) in children.mut_iter().zip(self.children.iter()) {
                 *node = match child {
@@ -193,7 +186,7 @@ impl MerkleMap {
         return ret;
     }
     
-    pub fn find(&self, key: &[u8, ..KEY_BYTES]) -> (Option<[u8, ..HASH_BYTES]>, TreePath) {
+    pub fn lookup<'a>(&'a self, key: &[u8, ..KEY_BYTES]) -> (Option<&'a [u8, ..HASH_BYTES]>, TreePath) {
         self.root.find(Element::from_bytes(key.as_slice()).as_slice())
     }
 
@@ -202,3 +195,15 @@ impl MerkleMap {
     }
 }
 
+impl Container for MerkleMap {
+    fn len(&self) -> uint {
+        unimplemented!();
+    }
+}
+
+impl Map<[u8, ..KEY_BYTES], [u8, ..HASH_BYTES]> for MerkleMap {
+    fn find<'a>(&'a self, key: &[u8, ..KEY_BYTES]) -> Option<&'a [u8, ..HASH_BYTES]> {
+        let (value, _) = self.lookup(key);
+        value
+    }
+}
