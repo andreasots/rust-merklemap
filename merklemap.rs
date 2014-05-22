@@ -38,6 +38,7 @@ fn main() {
     } else {
          MerkleMap::open(&mut file, 0).unwrap()
     };
+    println!("Tree size: {}", tree.len());
     print_values(&tree.root, "");
     let key: [u8, ..merklemap::KEY_BYTES] = [10, 146, 239, 177, 185, 26, 192, 44, 133, 138, 178, 5, 251, 182, 186, 244, 77, 103, 232, 209, 230, 37, 96, 10, 17, 2, 12, 250, 229, 0, 101, 219];
     println!("{:?}", tree.find(&key));

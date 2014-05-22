@@ -1,6 +1,8 @@
 #![crate_id = "merklemap#0.1"]
 #![crate_type = "lib"]
 
+extern crate crypto = "rust-crypto";
+
 use std::io::{IoResult, SeekSet};
 use std::default::Default;
 use std::slice::bytes::copy_memory;
@@ -127,25 +129,102 @@ impl Node {
                 };
             }
             if key.starts_with(self.key.as_slice()) {
-                match key.get(self.key.len()) {
-                    Some(&Element(index)) => match self.children[index as uint] {
-                        Some(ref node) => {
-                            let (v, p) = node.find(key.slice_from(self.key.len()+1));
-                            value = v;
-                            children[index as uint] = Some(box p);
-                        },
-                        None => ()
+                let Element(index) = key[self.key.len()];
+                match self.children[index as uint] {
+                    Some(ref node) => {
+                        let (v, p) = node.find(key.slice_from(self.key.len()+1));
+                        value = v;
+                        children[index as uint] = Some(box p);
                     },
                     None => ()
-                }
+                };
             }
             (value, Inode(self.hash, self.key.as_slice().to_owned(), children))
         } 
+    }
+
+    fn rehash(&mut self) {
+        unimplemented!();
+    }
+
+    fn swap(&mut self, k: &[Element], v: [u8, ..HASH_BYTES]) -> Option<[u8, ..HASH_BYTES]> {
+        if k == self.key.as_slice() {
+            let mut v = v;
+            std::mem::swap(&mut self.value, &mut v);
+            Some(v)
+        } else if k.starts_with(self.key.as_slice()) {
+            let Element(index) = k[self.key.len()];
+            let ret = match self.children[index as uint] {
+                Some(ref mut node) => node.swap(k.slice_from(self.key.len()+1), v),
+                ref mut node => {
+                    let mut child = Some(box Node {
+                        key: k.slice_from(self.key.len()+1).to_owned(),
+                        value: v,
+                        children: unsafe { std::mem::init() },
+                        hash: unimplemented!(),
+                    });
+                    std::mem::swap(node, &mut child);
+                    None
+                }
+            };
+            self.rehash();
+            ret
+        } else {
+            unimplemented!() // find common prefix and create a parent node
+        }
+    }
+
+    fn pop(&mut self, k: &[Element]) -> Option<[u8, ..HASH_BYTES]> {
+        if k == self.key.as_slice() {
+            self.key = box [];
+            let mut ret = [0, ..HASH_BYTES];
+            std::mem::swap(&mut self.value, &mut ret);
+            Some(ret)
+        } else if k.starts_with(self.key.as_slice()) {
+            let Element(index) = k[self.key.len()];
+            let ret = match self.children[index as uint] {
+                ref mut node if k.len() + 1 == self.key.len() => {
+                    let mut ret = None;
+                    std::mem::swap(node, &mut ret);
+                    ret.map(|node| node.value)
+                },
+                Some(ref mut node) => node.pop(k.slice_from(self.key.len()+1)),
+                None => None
+            };
+            for child in self.children.mut_iter() {
+                match child {
+                    &Some(ref c) if self.key.len()+c.key.len()+1 != KEY_ELEMENTS && c.children.iter().count(|c| c.is_some()) == 0 => (),
+                    _ => continue
+                }
+                *child = None;
+            }
+            if self.children.iter().count(|c| c.is_some()) == 1 {
+                let c = {
+                    let (c, node) = self.children.iter().enumerate().find(|&(_, c)| c.is_some()).unwrap();
+                    let node = node.as_ref().unwrap();
+                    self.key = {
+                        let mut key = Vec::with_capacity(self.key.len()+1+node.key.len());
+                        key.push_all(self.key);
+                        key.push(Element(c as u8));
+                        key.push_all(node.key);
+                        key.as_slice().to_owned()
+                    };
+                    self.value = node.value;
+                    c
+                };
+                self.children[c] = None;
+            }
+            self.rehash();
+            ret
+        } else {
+            None
+        }
     }
 }
 
 pub struct MerkleMap {
     pub root: Node,
+    length: uint,
 }
 
 impl MerkleMap {
@@ -158,13 +237,15 @@ impl MerkleMap {
             try!(file.seek((HEADER_SIZE + i*NODE_SIZE) as i64, SeekSet));
             nodes.push(try!(DiskNode::from_reader(file)));
         }
-
-       return Ok(MerkleMap {
-           root: MerkleMap::rebuild_node(if root_idx > 0 { root_idx } else { nodes.len()-1 }, &nodes)
-       });
+        
+        let (root, items) = MerkleMap::rebuild_node(if root_idx > 0 { root_idx } else { nodes.len()-1 }, &nodes, 0);
+        Ok(MerkleMap {
+            root: root,
+            length: items
+        })
     }
 
-    fn rebuild_node(idx: uint, nodes: &Vec<DiskNode>) -> Node {
+    fn rebuild_node(idx: uint, nodes: &Vec<DiskNode>, prefix_len: uint) -> (Node, uint) {
         let mut ret = Node {
             key: {
                 let mut key = Element::from_bytes(nodes.get(idx).key_substring);
@@ -177,27 +258,27 @@ impl MerkleMap {
             hash: nodes.get(idx).hash,
         };
 
+        let mut items = if prefix_len+ret.key.len() == KEY_ELEMENTS { 1 } else { 0 };
+        
         for (i, &child) in nodes.get(idx).children.iter().enumerate() {
             if child != 0 {
-                ret.children[i] = Some(box MerkleMap::rebuild_node(child as uint, nodes));
+                let (tree, tree_items) = MerkleMap::rebuild_node(child as uint, nodes, prefix_len+ret.key.len()+1);
+                ret.children[i] = Some(box tree);
+                items += tree_items;
             }
         }
         
-        return ret;
+        return (ret, items);
     }
     
     pub fn lookup<'a>(&'a self, key: &[u8, ..KEY_BYTES]) -> (Option<&'a [u8, ..HASH_BYTES]>, TreePath) {
         self.root.find(Element::from_bytes(key.as_slice()).as_slice())
     }
-
-    pub fn insert(&mut self, key: &[u8, ..KEY_BYTES], data: &[u8, ..HASH_BYTES]) {
-        unimplemented!();
-    }
 }
 
 impl Container for MerkleMap {
     fn len(&self) -> uint {
-        unimplemented!();
+        self.length
     }
 }
 
@@ -205,5 +286,31 @@ impl Map<[u8, ..KEY_BYTES], [u8, ..HASH_BYTES]> for MerkleMap {
     fn find<'a>(&'a self, key: &[u8, ..KEY_BYTES]) -> Option<&'a [u8, ..HASH_BYTES]> {
         let (value, _) = self.lookup(key);
         value
+    }
+}
+
+impl Mutable for MerkleMap {
+    fn clear(&mut self) {
+        self.root = Node {
+            key: box [],
+            value: [0, ..HASH_BYTES],
+            children: unsafe { std::mem::init() },
+            hash: [0, ..HASH_BYTES]
+        };
+        self.length = 0;
+    }
+}
+
+impl MutableMap<[u8, ..KEY_BYTES], [u8, ..HASH_BYTES]> for MerkleMap {
+    fn swap(&mut self, k: [u8, ..KEY_BYTES], v: [u8, ..HASH_BYTES]) -> Option<[u8, ..HASH_BYTES]> {
+        self.root.swap(Element::from_bytes(k).as_slice(), v)
+    }
+
+    fn pop(&mut self, k: &[u8, ..KEY_BYTES]) -> Option<[u8, ..HASH_BYTES]> {
+        self.root.pop(Element::from_bytes(k.as_slice()).as_slice())
+    }
+    
+    fn find_mut<'a>(&'a mut self, _key: &[u8, ..KEY_BYTES]) -> Option<&'a mut [u8, ..HASH_BYTES]> {
+        unimplemented!();
     }
 }
