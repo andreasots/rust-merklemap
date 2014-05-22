@@ -16,7 +16,7 @@ pub static NODE_CHILDREN: uint = 1 << ELEMENT_BITS;
 pub static HEADER_SIZE: u64 = 1024;
 pub static NODE_SIZE: u64 = 1024;
 
-#[deriving(Clone)]
+#[deriving(Clone,Eq,TotalEq)]
 pub struct Element(u8);
 
 impl Element {
@@ -98,9 +98,57 @@ impl Default for DiskNode {
 }
 
 pub struct Node {
+    pub key: ~[Element],
     pub value: [u8, ..HASH_BYTES],
     pub children: [Option<Box<Node>>, ..NODE_CHILDREN],
-    pub key: ~[Element],
+    pub hash: [u8, ..HASH_BYTES],
+}
+
+pub enum TreePath {
+    // Inner nodes that lead up to the target node
+    Inode([u8, ..HASH_BYTES], ~[Element], [Option<Box<TreePath>>, ..NODE_CHILDREN]),
+    // Inner node for which only its hash is known
+    HashNode([u8, ..HASH_BYTES]),
+    // Target node
+    Onode([u8, ..HASH_BYTES], ~[Element]),
+}
+
+impl Node {
+    fn find(&self, key: &[Element]) -> (Option<[u8, ..HASH_BYTES]>, TreePath) {
+        {
+            let mut key_as_str = StrBuf::with_capacity(key.len());
+            for e in key.iter() {
+                key_as_str.push_char(std::char::from_digit(e.to_byte() as uint, 16).unwrap());
+            }
+            println!("find {}", key_as_str);
+        }
+        if key == self.key.as_slice() {
+            (Some(self.value), Onode(self.hash, key.to_owned()))
+        } else {
+            let mut value: Option<[u8, ..HASH_BYTES]> = None;
+            let mut children: [Option<Box<TreePath>>, ..NODE_CHILDREN] = unsafe { std::mem::init() };
+            for (node, child) in children.mut_iter().zip(self.children.iter()) {
+                *node = match child {
+                    &Some(ref child) => Some(box HashNode(child.hash)),
+                    &None => None,
+                };
+            }
+            if key.starts_with(self.key.as_slice()) {
+                match key.get(self.key.len()) {
+                    Some(&Element(index)) => match self.children[index as uint] {
+                        Some(ref node) => {
+                            let (v, p) = node.find(key.slice_from(self.key.len()+1));
+                            value = v;
+                            children[index as uint] = Some(box p);
+                        },
+                        None => ()
+                    },
+                    None => ()
+                }
+            }
+            (value, Inode(self.hash, self.key.as_slice().to_owned(), children))
+        } 
+    }
 }
 
 pub struct MerkleMap {
@@ -125,14 +173,15 @@ impl MerkleMap {
 
     fn rebuild_node(idx: uint, nodes: &Vec<DiskNode>) -> Node {
         let mut ret = Node {
-            value: nodes.get(idx).value,
-            // nullable pointer optimization
-            children: unsafe { std::mem::init() },
             key: {
                 let mut key = Element::from_bytes(nodes.get(idx).key_substring);
                 key.truncate(nodes.get(idx).substring_length as uint);
                 key.as_slice().to_owned()
-            }
+            },
+            value: nodes.get(idx).value,
+            // nullable pointer optimization
+            children: unsafe { std::mem::init() },
+            hash: nodes.get(idx).hash,
         };
 
         for (i, &child) in nodes.get(idx).children.iter().enumerate() {
@@ -142,6 +191,14 @@ impl MerkleMap {
         }
         
         return ret;
+    }
+    
+    pub fn find(&self, key: &[u8, ..KEY_BYTES]) -> (Option<[u8, ..HASH_BYTES]>, TreePath) {
+        self.root.find(Element::from_bytes(key.as_slice()).as_slice())
+    }
+
+    pub fn insert(&mut self, key: &[u8, ..KEY_BYTES], data: &[u8, ..HASH_BYTES]) {
+        unimplemented!();
     }
 }
 
